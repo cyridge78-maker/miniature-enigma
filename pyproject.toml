@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "it-tech-agent"
+version = "0.1.0"
+description = "An IT support agent powered by Claude that diagnoses problems on the local machine."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["anthropic>=1.11", "psutil>=5.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+it-tech-agent = "it_tech_agent.__main__:main"
+
+[tool.setuptools]
+packages = ["it_tech_agent"]
