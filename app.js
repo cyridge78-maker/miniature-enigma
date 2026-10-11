@@ -4,7 +4,7 @@
 // ---------- Settings ----------
 const DEFAULTS = {
   inputId: '', channels: 1, echo: false, noise: false, agc: false, monitor: false, latency: 0,
-  beats: 4, countIn: 1, metroVol: 0.5, metroRec: true, metroPlay: false,
+  beats: 4, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
   theme: 'dark', zoom: 80, autoscroll: true, bits: 16, normalize: false,
 };
 let settings = loadSettings();
@@ -413,7 +413,7 @@ async function startRecording() {
   }
   populateDevices();
   rec.track = track; rec.chunks = [];
-  rec.countIn = settings.countIn * settings.beats * (60 / clamp(+$('bpm').value || 120, 30, 300));
+  rec.countIn = !settings.countInOn ? 0 : settings.countIn * settings.beats * (60 / clamp(+$('bpm').value || 120, 30, 300));
   rec.recorder = new MediaRecorder(rec.stream);
   rec.recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   rec.recorder.onstop = finishRecording;
@@ -661,6 +661,7 @@ function updateButtons() {
   $('btn-loop').setAttribute('aria-pressed', String(loopRegion.enabled));
   $('btn-play').textContent = transport.state === 'playing' ? '⏸' : '▶';
   $('btn-record').classList.toggle('active', transport.state === 'recording');
+  $('btn-countin').setAttribute('aria-pressed', String(settings.countInOn && settings.countIn > 0));
   $('btn-metro').setAttribute('aria-pressed', String(settings.metroRec || settings.metroPlay));
 }
 
@@ -693,7 +694,7 @@ function frame() {
 const bindings = [
   ['s-input', 'inputId', 'value'], ['s-channels', 'channels', 'num'], ['s-echo', 'echo', 'check'],
   ['s-noise', 'noise', 'check'], ['s-agc', 'agc', 'check'], ['s-monitor', 'monitor', 'check'],
-  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-countin', 'countIn', 'num'],
+  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
   ['s-metro-vol', 'metroVol', 'num'], ['s-metro-rec', 'metroRec', 'check'], ['s-metro-play', 'metroPlay', 'check'],
   ['s-theme', 'theme', 'value'], ['s-zoom', 'zoom', 'num'], ['s-autoscroll', 'autoscroll', 'check'],
   ['s-bits', 'bits', 'num'], ['s-normalize', 'normalize', 'check'],
@@ -743,6 +744,13 @@ $('btn-rewind').onclick = () => {
   if (playing) { stopSources(); stopMetronome(); }
   transport.pos = 0; scheduleScroll(true);
   if (playing) begin('playing');
+};
+$('btn-countin').onclick = () => {
+  const on = !(settings.countInOn && settings.countIn > 0);
+  settings.countInOn = on;
+  if (on && settings.countIn < 1) settings.countIn = 1; // 0 bars would make "on" meaningless
+  saveSettings(); syncSettingsUI(); updateButtons();
+  setStatus(on ? `Count-in on (${settings.countIn} bar${settings.countIn > 1 ? 's' : ''})` : 'Count-in off.');
 };
 $('btn-metro').onclick = () => {
   const on = !(settings.metroRec || settings.metroPlay);

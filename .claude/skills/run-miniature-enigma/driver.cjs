@@ -48,6 +48,12 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   const tapped = +(await page.inputValue('#bpm'));
   check('tap tempo sets ~120 BPM', Math.abs(tapped - 120) <= 6, `(${tapped})`);
 
+  // Count-in toggle: off then on again; the setting is shared with the dialog.
+  await page.click('#btn-countin');
+  check('count-in toggles off', await page.evaluate(() => settings.countInOn === false && !document.getElementById('s-countin-on').checked));
+  await page.click('#btn-countin');
+  check('count-in toggles back on', await page.evaluate(() => settings.countInOn === true));
+
   // Toolbar click-volume slider is wired to the same setting as the dialog.
   await page.locator('#click-vol').fill('0.2');
   const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('studio.settings')).metroVol);

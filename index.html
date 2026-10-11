@@ -21,6 +21,7 @@
     <label class="inline">BPM <input id="bpm" type="number" min="30" max="300" value="120"></label>
     <button id="btn-tap" title="Tap tempo (T): tap at least twice in rhythm">Tap</button>
     <label class="inline" title="Click track volume">Click <input id="click-vol" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+    <button id="btn-countin" title="Count-in before recording" aria-pressed="true">1·2·3</button>
     <button id="btn-metro" title="Metronome" aria-pressed="false">🔔</button>
     <button id="btn-export">Export WAV</button>
     <button id="btn-settings">⚙ Settings</button>
@@ -68,6 +69,7 @@
     <fieldset>
       <legend>Metronome</legend>
       <label>Beats per bar <input id="s-beats" type="number" min="1" max="12"></label>
+      <label class="check"><input type="checkbox" id="s-countin-on"> Count-in before recording</label>
       <label>Count-in bars <input id="s-countin" type="number" min="0" max="4"></label>
       <label>Volume <input id="s-metro-vol" type="range" min="0" max="1" step="0.01"></label>
       <label class="check"><input type="checkbox" id="s-metro-rec"> Metronome on while recording</label>
