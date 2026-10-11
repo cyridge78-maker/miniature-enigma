@@ -62,6 +62,17 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   check('split makes 3 clips', (await page.locator('.clip').count()) === 3, await status());
   await page.keyboard.press('Delete');
   check('delete removes selected clip', (await page.locator('.clip').count()) === 2);
+  // Undo / redo: button, then keyboard shortcut.
+  await page.click('#btn-undo');
+  check('undo restores deleted clip', (await page.locator('.clip').count()) === 3);
+  await page.click('#btn-redo');
+  check('redo re-deletes it', (await page.locator('.clip').count()) === 2);
+  await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z');
+  check('Ctrl+Z x3 undoes delete, split and trim', (await page.locator('.clip').nth(1).boundingBox()).width > 300,
+        `(${Math.round((await page.locator('.clip').nth(1).boundingBox()).width)} px)`);
+  await page.keyboard.press('Control+Shift+z'); await page.keyboard.press('Control+y');
+  check('Ctrl+Shift+Z / Ctrl+Y redo', (await page.locator('.clip').count()) === 3);
+  await page.click('#btn-undo'); await page.click('#btn-undo'); await page.click('#btn-redo'); await page.click('#btn-redo');
   await shot('3-edited');
 
   // Settings: switch theme.

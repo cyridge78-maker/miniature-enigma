@@ -23,11 +23,11 @@ node .claude/skills/run-miniature-enigma/driver.cjs /tmp/mine  # custom screensh
 ```
 
 It exercises one end-to-end flow and prints `PASS`/`FAIL` per step (exit code 1 on any failure):
-record 1 s from the fake mic (with count-in) → import a generated 4 s WAV → trim its right edge by dragging → split at the playhead → delete a clip → change a setting (theme) → export `mix.wav` → assert no console/page errors.
+record 1 s from the fake mic (with count-in) → import a generated 4 s WAV → trim its right edge by dragging → split at the playhead → delete a clip → undo/redo (buttons and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) → change a setting (theme) → export `mix.wav` → assert no console/page errors.
 
 Output: `/tmp/shots/{1-initial,2-recorded,3-edited,4-settings}.png` and `/tmp/shots/mix.wav`. Open the screenshots (Read tool) — a passing run with a blank page would be a bug.
 
-To poke at something else, copy the driver and change the middle section. Useful selectors: `#btn-record`, `#btn-play`, `#btn-import` / `#file-import` (use `setInputFiles`), `#btn-split`, `#btn-delete-clip`, `#btn-export`, `#btn-settings`, settings fields `#s-*`, clips `.clip` with `.handle.left` / `.handle.right`, status line `#status`.
+To poke at something else, copy the driver and change the middle section. Useful selectors: `#btn-record`, `#btn-play`, `#btn-import` / `#file-import` (use `setInputFiles`), `#btn-split`, `#btn-delete-clip`, `#btn-undo`, `#btn-redo`, `#btn-export`, `#btn-settings`, settings fields `#s-*`, clips `.clip` with `.handle.left` / `.handle.right`, status line `#status`.
 
 ## Run (human path)
 

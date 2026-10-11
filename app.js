@@ -225,6 +225,36 @@ const makeClip = (start, buffer, blob) => ({ start, buffer, blob, off: 0, dur: b
 let selected = null; // {track, clip}
 const findTrack = (clip) => tracks.find((t) => t.clips.includes(clip));
 
+// Undo/redo: snapshots of every track's clip list (clips are small objects sharing immutable buffers).
+const history = { undo: [], redo: [] };
+const HISTORY_LIMIT = 100;
+const snapshot = () => tracks.map((t) => ({ track: t, clips: t.clips.map((c) => ({ ...c })) }));
+function checkpoint(snap = snapshot()) {
+  history.undo.push(snap);
+  if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
+  history.redo = [];
+  updateHistoryButtons();
+}
+function resetHistory() { history.undo = []; history.redo = []; selected = null; updateHistoryButtons(); }
+function restore(snap) {
+  for (const e of snap) if (tracks.includes(e.track)) e.track.clips = e.clips.map((c) => ({ ...c }));
+  selected = null; renderWaves(); refreshPlayback(); scheduleSave(); updateHistoryButtons();
+}
+function undo() {
+  if (!history.undo.length || transport.state === 'recording') return;
+  history.redo.push(snapshot()); restore(history.undo.pop());
+  setStatus('Undo.');
+}
+function redo() {
+  if (!history.redo.length || transport.state === 'recording') return;
+  history.undo.push(snapshot()); restore(history.redo.pop());
+  setStatus('Redo.');
+}
+function updateHistoryButtons() {
+  $('btn-undo').disabled = !history.undo.length;
+  $('btn-redo').disabled = !history.redo.length;
+}
+
 function refreshPlayback() {
   if (transport.state !== 'playing') return;
   stopSources(); stopMetronome(); transport.pos = position(); begin('playing');
@@ -232,6 +262,7 @@ function refreshPlayback() {
 function deleteSelected() {
   if (!selected || transport.state === 'recording') return;
   const t = findTrack(selected.clip);
+  if (t) checkpoint();
   if (t) t.clips = t.clips.filter((c) => c !== selected.clip);
   selected = null; renderWaves(); refreshPlayback(); scheduleSave();
 }
@@ -239,6 +270,7 @@ function splitSelected() {
   if (!selected || transport.state === 'recording') { setStatus('Select a clip first.'); return; }
   const { clip } = selected, t = findTrack(clip), at = position() - clip.start;
   if (!t || at < MIN_CLIP || at > clip.dur - MIN_CLIP) { setStatus('Move the playhead inside the selected clip to split.'); return; }
+  checkpoint();
   const right = { ...clip, start: clip.start + at, off: clip.off + at, dur: clip.dur - at };
   clip.dur = at;
   t.clips.push(right); selected = { track: t, clip: right };
@@ -247,10 +279,12 @@ function splitSelected() {
 async function importFiles(files) {
   const track = tracks.find((t) => t.armed) || tracks[0] || createTrack();
   let at = position();
+  let before = snapshot(); // checkpointed once, on the first successful decode
   for (const f of files) {
     try {
       const buffer = await ctx.decodeAudioData(await f.arrayBuffer());
       const clip = makeClip(at, buffer, bufferToWav(buffer, 16));
+      if (before) { checkpoint(before); before = null; }
       track.clips.push(clip); selected = { track, clip };
       setStatus(`Imported “${f.name}” (${buffer.duration.toFixed(2)} s) onto “${track.name}”.`);
       at += buffer.duration;
@@ -269,6 +303,7 @@ function startDrag(e, track, clip, mode) {
   // Restyle in place: re-rendering here would replace the element and swallow the click.
   document.querySelectorAll('.clip.selected').forEach((n) => n.classList.remove('selected'));
   e.currentTarget.closest('.clip').classList.add('selected');
+  const before = snapshot();
   const x0 = e.clientX, orig = { start: clip.start, off: clip.off, dur: clip.dur }, z = settings.zoom;
   let moved = false;
   const move = (ev) => {
@@ -286,7 +321,7 @@ function startDrag(e, track, clip, mode) {
   };
   const up = () => {
     window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
-    if (moved) { refreshPlayback(); scheduleSave(); renderWaves(); }
+    if (moved) { checkpoint(before); refreshPlayback(); scheduleSave(); renderWaves(); }
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
@@ -368,6 +403,7 @@ async function finishRecording() {
     if (len < decoded.sampleRate * 0.02) { setStatus('Nothing recorded.'); return; }
     const out = ctx.createBuffer(decoded.numberOfChannels, len, decoded.sampleRate);
     for (let c = 0; c < out.numberOfChannels; c++) out.copyToChannel(decoded.getChannelData(c).subarray(trim), c);
+    checkpoint();
     rec.track.clips.push(makeClip(rec.pos0, out, bufferToWav(out, 32)));
     setStatus(`Recorded ${out.duration.toFixed(2)} s on “${rec.track.name}”.`);
     renderWaves(); scheduleSave();
@@ -437,11 +473,12 @@ function renderTracks() {
     const mute = button('M', 'Mute', () => { t.mute = !t.mute; applyMix(); renderTracks(); scheduleSave(); }, t.mute ? 'active' : '');
     const solo = button('S', 'Solo', () => { t.solo = !t.solo; applyMix(); renderTracks(); scheduleSave(); }, t.solo ? 'active' : '');
     const clear = button('Clear', 'Remove all recordings on this track', () => {
-      t.clips = []; renderWaves(); scheduleSave();
+      if (!t.clips.length) return;
+      checkpoint(); t.clips = []; selected = null; renderWaves(); scheduleSave();
     });
     const del = button('🗑', 'Delete track', () => {
       t.gain.disconnect(); t.panner.disconnect();
-      tracks = tracks.filter((x) => x !== t); renderTracks(); scheduleSave();
+      tracks = tracks.filter((x) => x !== t); resetHistory(); renderTracks(); scheduleSave();
     }, 'danger');
     row.append(arm, mute, solo, clear, del);
     head.append(name, row,
@@ -614,13 +651,15 @@ $('btn-metro').onclick = () => {
 $('btn-import').onclick = () => $('file-import').click();
 $('file-import').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
 $('btn-split').onclick = splitSelected;
+$('btn-undo').onclick = undo;
+$('btn-redo').onclick = redo;
 $('btn-delete-clip').onclick = deleteSelected;
 $('btn-add-track').onclick = () => { createTrack(); renderTracks(); scheduleSave(); };
 $('btn-clear').onclick = () => {
   if (!tracks.length || !confirm('Delete all tracks and recordings?')) return;
   stop();
   tracks.forEach((t) => { t.gain.disconnect(); t.panner.disconnect(); });
-  tracks = []; createTrack(); renderTracks(); scheduleSave();
+  tracks = []; createTrack(); resetHistory(); renderTracks(); scheduleSave();
 };
 $('btn-export').onclick = () => exportWav().catch((e) => setStatus('Export failed: ' + e.message));
 $('btn-settings').onclick = async () => { syncSettingsUI(); $('settings').showModal(); await populateDevices(); };
@@ -632,7 +671,14 @@ $('bpm').onchange = () => {
   scheduleSave();
 };
 document.addEventListener('keydown', (e) => {
-  if (editingText() || $('settings').open || e.metaKey || e.ctrlKey) return;
+  if (editingText() || $('settings').open) return;
+  if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if (k === 'y') { e.preventDefault(); redo(); }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey) return;
   if (e.code === 'Space') { e.preventDefault(); play(); }
   else if (e.key === 'r' || e.key === 'R') $('btn-record').click();
   else if (e.key === 's' || e.key === 'S') splitSelected();
@@ -665,6 +711,6 @@ document.addEventListener('keydown', (e) => {
   if (!tracks.length) createTrack();
   applyMix();
   renderTracks();
-  updateButtons();
+  updateButtons(); updateHistoryButtons();
   requestAnimationFrame(frame);
 })();
