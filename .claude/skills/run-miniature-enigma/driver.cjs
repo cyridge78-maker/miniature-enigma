@@ -48,6 +48,13 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   const tapped = +(await page.inputValue('#bpm'));
   check('tap tempo sets ~120 BPM', Math.abs(tapped - 120) <= 6, `(${tapped})`);
 
+  // Time signature: 6/8 at 120 BPM clicks every eighth (0.25 s); restore 4/4 afterwards.
+  await page.selectOption('#time-sig', '6/8');
+  const sig = await page.evaluate(() => ({ b: settings.beats, u: settings.beatUnit, spb: beatSeconds(), dlg: document.getElementById('s-beats').value }));
+  check('time signature 6/8 sets beats, unit and click spacing', sig.b === 6 && sig.u === 8 && Math.abs(sig.spb - 0.25) < 1e-9 && sig.dlg === '6', JSON.stringify(sig));
+  await page.selectOption('#time-sig', '4/4');
+  check('time signature back to 4/4', await page.evaluate(() => settings.beats === 4 && settings.beatUnit === 4 && Math.abs(beatSeconds() - 60 / +document.getElementById('bpm').value) < 1e-9));
+
   // Count-in toggle: off then on again; the setting is shared with the dialog.
   await page.click('#btn-countin');
   check('count-in toggles off', await page.evaluate(() => settings.countInOn === false && !document.getElementById('s-countin-on').checked));

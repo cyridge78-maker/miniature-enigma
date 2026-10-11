@@ -4,7 +4,7 @@
 // ---------- Settings ----------
 const DEFAULTS = {
   inputId: '', channels: 1, echo: false, noise: false, agc: false, monitor: false, latency: 0,
-  beats: 4, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
+  beats: 4, beatUnit: 4, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
   theme: 'dark', zoom: 80, autoscroll: true, bits: 16, normalize: false,
 };
 let settings = loadSettings();
@@ -139,6 +139,9 @@ function applyMix() {
 const projectEnd = () => Math.max(0, ...tracks.flatMap((t) => t.clips.map((c) => c.start + c.dur)));
 
 // ---------- Transport ----------
+/** BPM counts quarter notes; the time signature's denominator scales the click (6/8 clicks on eighths). */
+const beatSeconds = () => (60 / clamp(+$('bpm').value || 120, 30, 300)) * (4 / settings.beatUnit);
+
 const transport = { state: 'stopped', pos: 0, pos0: 0, t0: 0, sources: [], metroTimer: 0, nextBeat: 0, loop: null, loopTimer: 0, nextBoundary: 0 };
 /** Loop region on the timeline (seconds). Only affects playback, not recording. */
 const loopRegion = { start: 0, end: 0, enabled: false };
@@ -218,7 +221,7 @@ function scheduleLoopClicks(from, to, when0, spb) {
 
 async function begin(mode, countInSec = 0) {
   await ctx.resume();
-  const spb = 60 / clamp(+$('bpm').value || 120, 30, 300);
+  const spb = beatSeconds();
   transport.pos0 = transport.pos;
   transport.t0 = ctx.currentTime + 0.05 + countInSec;
   transport.state = mode;
@@ -413,7 +416,7 @@ async function startRecording() {
   }
   populateDevices();
   rec.track = track; rec.chunks = [];
-  rec.countIn = !settings.countInOn ? 0 : settings.countIn * settings.beats * (60 / clamp(+$('bpm').value || 120, 30, 300));
+  rec.countIn = !settings.countInOn ? 0 : settings.countIn * settings.beats * beatSeconds();
   rec.recorder = new MediaRecorder(rec.stream);
   rec.recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   rec.recorder.onstop = finishRecording;
@@ -694,17 +697,26 @@ function frame() {
 const bindings = [
   ['s-input', 'inputId', 'value'], ['s-channels', 'channels', 'num'], ['s-echo', 'echo', 'check'],
   ['s-noise', 'noise', 'check'], ['s-agc', 'agc', 'check'], ['s-monitor', 'monitor', 'check'],
-  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
+  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-beatunit', 'beatUnit', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
   ['s-metro-vol', 'metroVol', 'num'], ['s-metro-rec', 'metroRec', 'check'], ['s-metro-play', 'metroPlay', 'check'],
   ['s-theme', 'theme', 'value'], ['s-zoom', 'zoom', 'num'], ['s-autoscroll', 'autoscroll', 'check'],
   ['s-bits', 'bits', 'num'], ['s-normalize', 'normalize', 'check'],
 ];
+const TIME_SIGS = ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '2/2', '3/8', '6/8', '9/8', '12/8'];
+function syncTimeSig() {
+  const sel = $('time-sig'), cur = `${settings.beats}/${settings.beatUnit}`;
+  sel.textContent = '';
+  const list = TIME_SIGS.includes(cur) ? TIME_SIGS : [...TIME_SIGS, cur];
+  for (const v of list) sel.add(new Option(v, v));
+  sel.value = cur;
+}
 function syncSettingsUI() {
   for (const [id, key, kind] of bindings) {
     const el = $(id);
     if (kind === 'check') el.checked = settings[key]; else el.value = settings[key];
   }
   $('click-vol').value = settings.metroVol;
+  syncTimeSig();
 }
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
@@ -792,6 +804,12 @@ function tapTempo() {
   $('bpm').dispatchEvent(new Event('change'));
   setStatus(`Tempo: ${bpm} BPM`);
 }
+$('time-sig').onchange = () => {
+  const [n, d] = $('time-sig').value.split('/').map(Number);
+  settings.beats = n; settings.beatUnit = d; saveSettings(); syncSettingsUI();
+  refreshPlayback();
+  setStatus(`Time signature ${n}/${d}`);
+};
 $('btn-tap').onclick = tapTempo;
 $('btn-loop').onclick = toggleLoop;
 // Toolbar click volume shares settings.metroVol with the dialog; clicks read it when scheduled, so it is live.
