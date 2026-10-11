@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miniature Studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>🎙 Miniature Studio</h1>
+  <div class="transport">
+    <button id="btn-rewind" title="Rewind (Home)">⏮</button>
+    <button id="btn-play" title="Play / Pause (Space)">▶</button>
+    <button id="btn-stop" title="Stop">⏹</button>
+    <button id="btn-record" class="rec" title="Record (R)">⏺</button>
+    <span id="time" class="time">00:00.000</span>
+  </div>
+  <div class="tools">
+    <label class="inline">BPM <input id="bpm" type="number" min="30" max="300" value="120"></label>
+    <button id="btn-metro" title="Metronome" aria-pressed="false">🔔</button>
+    <button id="btn-export">Export WAV</button>
+    <button id="btn-settings">⚙ Settings</button>
+  </div>
+</header>
+
+<main>
+  <div class="master">
+    <label>Master <input id="master-vol" type="range" min="0" max="1.5" step="0.01" value="1"></label>
+    <canvas id="master-meter" width="160" height="10"></canvas>
+    <button id="btn-add-track">+ Add track</button>
+    <button id="btn-clear" class="danger">Clear project</button>
+  </div>
+  <div id="tracks"></div>
+  <p id="status" class="status" role="status">Ready.</p>
+</main>
+
+<dialog id="settings">
+  <form method="dialog" id="settings-form">
+    <h2>Settings</h2>
+
+    <fieldset>
+      <legend>Audio input</legend>
+      <label>Input device
+        <select id="s-input"><option value="">Default</option></select>
+      </label>
+      <label>Channels
+        <select id="s-channels"><option value="1">Mono</option><option value="2">Stereo</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="s-echo"> Echo cancellation</label>
+      <label class="check"><input type="checkbox" id="s-noise"> Noise suppression</label>
+      <label class="check"><input type="checkbox" id="s-agc"> Auto gain control</label>
+      <label class="check"><input type="checkbox" id="s-monitor"> Monitor input while recording (use headphones)</label>
+      <label>Latency compensation (ms)
+        <input id="s-latency" type="number" min="0" max="500" step="1">
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Metronome</legend>
+      <label>Beats per bar <input id="s-beats" type="number" min="1" max="12"></label>
+      <label>Count-in bars <input id="s-countin" type="number" min="0" max="4"></label>
+      <label>Volume <input id="s-metro-vol" type="range" min="0" max="1" step="0.01"></label>
+      <label class="check"><input type="checkbox" id="s-metro-rec"> Metronome on while recording</label>
+      <label class="check"><input type="checkbox" id="s-metro-play"> Metronome on during playback</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Interface</legend>
+      <label>Theme
+        <select id="s-theme"><option value="dark">Dark</option><option value="light">Light</option></select>
+      </label>
+      <label>Waveform zoom (px / second)
+        <input id="s-zoom" type="number" min="10" max="400" step="5">
+      </label>
+      <label class="check"><input type="checkbox" id="s-autoscroll"> Follow playhead</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Export</legend>
+      <label>Bit depth
+        <select id="s-bits"><option value="16">16-bit</option><option value="24">24-bit</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="s-normalize"> Normalize on export</label>
+    </fieldset>
+
+    <menu>
+      <button type="button" id="s-reset" class="danger">Reset to defaults</button>
+      <button value="close" class="primary">Done</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
