@@ -94,7 +94,7 @@ function scheduleSave() {
         master: +$('master-vol').value,
         tracks: tracks.map((t) => ({
           name: t.name, vol: t.vol, pan: t.pan, mute: t.mute, solo: t.solo,
-          clips: t.clips.map((c) => ({ start: c.start, blob: c.blob })),
+          clips: t.clips.map((c) => ({ start: c.start, off: c.off, dur: c.dur, blob: c.blob })),
         })),
       });
     } catch (e) { setStatus('Could not save project: ' + e.message); }
@@ -135,7 +135,7 @@ function applyMix() {
   }
   master.gain.setTargetAtTime(+$('master-vol').value, ctx.currentTime, 0.01);
 }
-const projectEnd = () => Math.max(0, ...tracks.flatMap((t) => t.clips.map((c) => c.start + c.buffer.duration)));
+const projectEnd = () => Math.max(0, ...tracks.flatMap((t) => t.clips.map((c) => c.start + c.dur)));
 
 // ---------- Transport ----------
 const transport = { state: 'stopped', pos: 0, pos0: 0, t0: 0, sources: [], metroTimer: 0, nextBeat: 0 };
@@ -146,10 +146,10 @@ function startSources(pos0, t0) {
     for (const c of t.clips) {
       const when = t0 + (c.start - pos0);
       const offset = Math.max(0, ctx.currentTime - when);
-      if (offset >= c.buffer.duration) continue;
+      if (offset >= c.dur) continue;
       const src = ctx.createBufferSource();
       src.buffer = c.buffer; src.connect(t.gain);
-      src.start(Math.max(when, ctx.currentTime), offset);
+      src.start(Math.max(when, ctx.currentTime), c.off + offset, c.dur - offset);
       transport.sources.push(src);
     }
   }
@@ -216,6 +216,80 @@ function stop() {
   pause();
   transport.pos = 0;
   scheduleScroll(true);
+}
+
+// ---------- Clips ----------
+const MIN_CLIP = 0.02;
+/** A clip is a non-destructive window (off, dur) onto its buffer, placed at `start` on the timeline. */
+const makeClip = (start, buffer, blob) => ({ start, buffer, blob, off: 0, dur: buffer.duration });
+let selected = null; // {track, clip}
+const findTrack = (clip) => tracks.find((t) => t.clips.includes(clip));
+
+function refreshPlayback() {
+  if (transport.state !== 'playing') return;
+  stopSources(); stopMetronome(); transport.pos = position(); begin('playing');
+}
+function deleteSelected() {
+  if (!selected || transport.state === 'recording') return;
+  const t = findTrack(selected.clip);
+  if (t) t.clips = t.clips.filter((c) => c !== selected.clip);
+  selected = null; renderWaves(); refreshPlayback(); scheduleSave();
+}
+function splitSelected() {
+  if (!selected || transport.state === 'recording') { setStatus('Select a clip first.'); return; }
+  const { clip } = selected, t = findTrack(clip), at = position() - clip.start;
+  if (!t || at < MIN_CLIP || at > clip.dur - MIN_CLIP) { setStatus('Move the playhead inside the selected clip to split.'); return; }
+  const right = { ...clip, start: clip.start + at, off: clip.off + at, dur: clip.dur - at };
+  clip.dur = at;
+  t.clips.push(right); selected = { track: t, clip: right };
+  renderWaves(); refreshPlayback(); scheduleSave();
+}
+async function importFiles(files) {
+  const track = tracks.find((t) => t.armed) || tracks[0] || createTrack();
+  let at = position();
+  for (const f of files) {
+    try {
+      const buffer = await ctx.decodeAudioData(await f.arrayBuffer());
+      const clip = makeClip(at, buffer, bufferToWav(buffer, 16));
+      track.clips.push(clip); selected = { track, clip };
+      setStatus(`Imported “${f.name}” (${buffer.duration.toFixed(2)} s) onto “${track.name}”.`);
+      at += buffer.duration;
+    } catch {
+      setStatus(`Could not decode “${f.name}”: unsupported audio file.`);
+    }
+  }
+  renderTracks(); refreshPlayback(); scheduleSave();
+}
+
+/** Drag a clip body to move it, or its edges to trim. */
+function startDrag(e, track, clip, mode) {
+  e.preventDefault(); e.stopPropagation();
+  if (transport.state === 'recording') return;
+  selected = { track, clip };
+  // Restyle in place: re-rendering here would replace the element and swallow the click.
+  document.querySelectorAll('.clip.selected').forEach((n) => n.classList.remove('selected'));
+  e.currentTarget.closest('.clip').classList.add('selected');
+  const x0 = e.clientX, orig = { start: clip.start, off: clip.off, dur: clip.dur }, z = settings.zoom;
+  let moved = false;
+  const move = (ev) => {
+    const d = (ev.clientX - x0) / z;
+    if (Math.abs(ev.clientX - x0) > 2) moved = true;
+    if (!moved) return;
+    if (mode === 'move') clip.start = Math.max(0, orig.start + d);
+    else if (mode === 'left') {
+      const dd = clamp(d, -Math.min(orig.off, orig.start), orig.dur - MIN_CLIP);
+      clip.start = orig.start + dd; clip.off = orig.off + dd; clip.dur = orig.dur - dd;
+    } else {
+      clip.dur = clamp(orig.dur + d, MIN_CLIP, clip.buffer.duration - orig.off);
+    }
+    renderWaves();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    if (moved) { refreshPlayback(); scheduleSave(); renderWaves(); }
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
 }
 
 // ---------- Recording ----------
@@ -294,7 +368,7 @@ async function finishRecording() {
     if (len < decoded.sampleRate * 0.02) { setStatus('Nothing recorded.'); return; }
     const out = ctx.createBuffer(decoded.numberOfChannels, len, decoded.sampleRate);
     for (let c = 0; c < out.numberOfChannels; c++) out.copyToChannel(decoded.getChannelData(c).subarray(trim), c);
-    rec.track.clips.push({ start: rec.pos0, buffer: out, blob: bufferToWav(out, 32) });
+    rec.track.clips.push(makeClip(rec.pos0, out, bufferToWav(out, 32)));
     setStatus(`Recorded ${out.duration.toFixed(2)} s on “${rec.track.name}”.`);
     renderWaves(); scheduleSave();
   } catch (e) {
@@ -315,7 +389,7 @@ async function exportWav() {
     const p = off.createStereoPanner(); p.pan.value = t.pan;
     g.connect(p); p.connect(m);
     for (const c of t.clips) {
-      const s = off.createBufferSource(); s.buffer = c.buffer; s.connect(g); s.start(c.start);
+      const s = off.createBufferSource(); s.buffer = c.buffer; s.connect(g); s.start(c.start, c.off, c.dur);
     }
   }
   setStatus('Rendering…');
@@ -377,8 +451,10 @@ function renderTracks() {
     const wave = document.createElement('div'); wave.className = 'track-wave';
     const canvas = document.createElement('canvas');
     const ph = document.createElement('div'); ph.className = 'playhead';
-    wave.append(canvas, ph);
+    const overlay = document.createElement('div'); overlay.className = 'clips';
+    wave.append(canvas, overlay, ph);
     wave.onclick = (e) => {
+      if (selected) { selected = null; renderWaves(); }
       if (transport.state === 'recording') return;
       const x = e.clientX - canvas.getBoundingClientRect().left;
       const p = Math.max(0, x / settings.zoom);
@@ -388,7 +464,7 @@ function renderTracks() {
     wave.onscroll = () => syncScroll(wave);
     el.append(head, wave);
     host.appendChild(el);
-    t.el = el; t.canvas = canvas; t.playhead = ph; t.wave = wave;
+    t.el = el; t.overlay = overlay; t.canvas = canvas; t.playhead = ph; t.wave = wave;
   }
   renderWaves();
 }
@@ -414,13 +490,31 @@ function renderWaves() {
     for (let s = 0; s * z < width; s++) { g.moveTo(s * z + .5, 0); g.lineTo(s * z + .5, s % 5 ? 6 : 14); }
     g.moveTo(0, 48.5); g.lineTo(width, 48.5); g.stroke();
     g.fillStyle = color;
+    t.overlay.textContent = '';
     for (const clip of t.clips) {
-      const data = clip.buffer.getChannelData(0), x0 = clip.start * z, w = Math.min(width - x0, clip.buffer.duration * z);
-      const per = data.length / (clip.buffer.duration * z);
+      const data = clip.buffer.getChannelData(0), x0 = clip.start * z, w = Math.max(0, Math.min(width - x0, clip.dur * z));
+      const per = clip.buffer.sampleRate / z, base = clip.off * clip.buffer.sampleRate;
       g.globalAlpha = 0.15; g.fillRect(x0, 0, w, 96); g.globalAlpha = 1;
+      const el = document.createElement('div');
+      el.className = 'clip' + (selected?.clip === clip ? ' selected' : '');
+      el.style.left = x0 + 'px'; el.style.width = w + 'px';
+      el.title = 'Drag to move · drag edges to trim · Delete removes';
+      el.onpointerdown = (e) => startDrag(e, t, clip, 'move');
+      el.onclick = (e) => { // selecting a clip also moves the playhead to the click
+        e.stopPropagation();
+        if (transport.state === 'recording') return;
+        transport.pos = Math.max(0, (e.clientX - t.canvas.getBoundingClientRect().left) / settings.zoom);
+        refreshPlayback();
+      };
+      for (const side of ['left', 'right']) {
+        const h = document.createElement('div'); h.className = 'handle ' + side;
+        h.onpointerdown = (e) => startDrag(e, t, clip, side);
+        el.appendChild(h);
+      }
+      t.overlay.appendChild(el);
       for (let x = 0; x < w; x++) {
         let mn = 0, mx = 0;
-        const a = Math.floor(x * per), b = Math.min(data.length, Math.floor((x + 1) * per) + 1);
+        const a = Math.floor(base + x * per), b = Math.min(data.length, Math.floor(base + (x + 1) * per) + 1);
         for (let i = a; i < b; i++) { const v = data[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
         g.fillRect(x0 + x, 48 - mx * 44, 1, Math.max(1, (mx - mn) * 44));
       }
@@ -517,6 +611,10 @@ $('btn-metro').onclick = () => {
   const on = !(settings.metroRec || settings.metroPlay);
   settings.metroRec = settings.metroPlay = on; saveSettings(); syncSettingsUI(); updateButtons();
 };
+$('btn-import').onclick = () => $('file-import').click();
+$('file-import').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
+$('btn-split').onclick = splitSelected;
+$('btn-delete-clip').onclick = deleteSelected;
 $('btn-add-track').onclick = () => { createTrack(); renderTracks(); scheduleSave(); };
 $('btn-clear').onclick = () => {
   if (!tracks.length || !confirm('Delete all tracks and recordings?')) return;
@@ -537,6 +635,8 @@ document.addEventListener('keydown', (e) => {
   if (editingText() || $('settings').open || e.metaKey || e.ctrlKey) return;
   if (e.code === 'Space') { e.preventDefault(); play(); }
   else if (e.key === 'r' || e.key === 'R') $('btn-record').click();
+  else if (e.key === 's' || e.key === 'S') splitSelected();
+  else if (e.code === 'Delete' || e.code === 'Backspace') deleteSelected();
   else if (e.code === 'Home') $('btn-rewind').click();
 });
 
@@ -551,7 +651,12 @@ document.addEventListener('keydown', (e) => {
       for (const td of saved.tracks) {
         const t = createTrack(td);
         for (const c of td.clips) {
-          try { t.clips.push({ start: c.start, blob: c.blob, buffer: await ctx.decodeAudioData(await c.blob.arrayBuffer()) }); }
+          try {
+            const clip = makeClip(c.start, await ctx.decodeAudioData(await c.blob.arrayBuffer()), c.blob);
+            clip.off = clamp(c.off ?? 0, 0, clip.buffer.duration);
+            clip.dur = clamp(c.dur ?? clip.buffer.duration, 0, clip.buffer.duration - clip.off);
+            t.clips.push(clip);
+          }
           catch { /* skip undecodable clip */ }
         }
       }

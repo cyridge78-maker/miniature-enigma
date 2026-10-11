@@ -29,6 +29,10 @@
     <label>Master <input id="master-vol" type="range" min="0" max="1.5" step="0.01" value="1"></label>
     <canvas id="master-meter" width="160" height="10"></canvas>
     <button id="btn-add-track">+ Add track</button>
+    <button id="btn-import" title="Import audio onto the armed track at the playhead">Import audio…</button>
+    <input id="file-import" type="file" accept="audio/*" multiple hidden>
+    <button id="btn-split" title="Split selected clip at playhead (S)">✂ Split</button>
+    <button id="btn-delete-clip" title="Delete selected clip (Delete)">Delete clip</button>
     <button id="btn-clear" class="danger">Clear project</button>
   </div>
   <div id="tracks"></div>
