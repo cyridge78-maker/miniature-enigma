@@ -48,6 +48,11 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   const tapped = +(await page.inputValue('#bpm'));
   check('tap tempo sets ~120 BPM', Math.abs(tapped - 120) <= 6, `(${tapped})`);
 
+  // Toolbar click-volume slider is wired to the same setting as the dialog.
+  await page.locator('#click-vol').fill('0.2');
+  const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('studio.settings')).metroVol);
+  check('click volume slider persists to settings', persisted === 0.2, `(${persisted})`);
+
   // Record ~1s with a 240 BPM / 1-beat-bar-less count-in of 1 bar (=1s), via the fake mic.
   await page.fill('#bpm', '240'); await page.dispatchEvent('#bpm', 'change');
   await page.click('#btn-record'); await page.waitForTimeout(2200); await page.click('#btn-record');

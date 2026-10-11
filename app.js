@@ -604,6 +604,7 @@ function syncSettingsUI() {
     const el = $(id);
     if (kind === 'check') el.checked = settings[key]; else el.value = settings[key];
   }
+  $('click-vol').value = settings.metroVol;
 }
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
@@ -685,6 +686,8 @@ function tapTempo() {
   setStatus(`Tempo: ${bpm} BPM`);
 }
 $('btn-tap').onclick = tapTempo;
+// Toolbar click volume shares settings.metroVol with the dialog; clicks read it when scheduled, so it is live.
+$('click-vol').oninput = () => { settings.metroVol = +$('click-vol').value; saveSettings(); syncSettingsUI(); };
 document.addEventListener('keydown', (e) => {
   if (editingText() || $('settings').open) return;
   if ((e.metaKey || e.ctrlKey) && !e.altKey) {
@@ -704,7 +707,7 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- Boot ----------
 (async function init() {
-  applySettings();
+  applySettings(); syncSettingsUI();
   try {
     const saved = await db.get();
     if (saved) {

@@ -23,7 +23,7 @@ node .claude/skills/run-miniature-enigma/driver.cjs /tmp/mine  # custom screensh
 ```
 
 It exercises one end-to-end flow and prints `PASS`/`FAIL` per step (exit code 1 on any failure):
-tap tempo (`#btn-tap`) →
+tap tempo (`#btn-tap`) → click-volume slider (`#click-vol`) →
 record 1 s from the fake mic (with count-in) → import a generated 4 s WAV → trim its right edge by dragging → split at the playhead → delete a clip → undo/redo (buttons and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) → change a setting (theme) → export `mix.wav` → assert no console/page errors.
 
 Output: `/tmp/shots/{1-initial,2-recorded,3-edited,4-settings}.png` and `/tmp/shots/mix.wav`. Open the screenshots (Read tool) — a passing run with a blank page would be a bug.
