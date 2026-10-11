@@ -24,7 +24,7 @@ node .claude/skills/run-miniature-enigma/driver.cjs /tmp/mine  # custom screensh
 
 It exercises one end-to-end flow and prints `PASS`/`FAIL` per step (exit code 1 on any failure):
 tap tempo (`#btn-tap`) → click-volume slider (`#click-vol`) →
-record 1 s from the fake mic (with count-in) → import a generated 4 s WAV → trim its right edge by dragging → split at the playhead → delete a clip → undo/redo (buttons and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) → change a setting (theme) → export `mix.wav` → assert no console/page errors.
+record 1 s from the fake mic (with count-in) → import a generated 4 s WAV → trim its right edge by dragging → split at the playhead → delete a clip → undo/redo (buttons and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) → shift-drag a loop region and check playback wraps inside it (`#btn-loop`) → change a setting (theme) → export `mix.wav` → assert no console/page errors.
 
 Output: `/tmp/shots/{1-initial,2-recorded,3-edited,4-settings}.png` and `/tmp/shots/mix.wav`. Open the screenshots (Read tool) — a passing run with a blank page would be a bug.
 
@@ -43,6 +43,8 @@ Open `index.html` in a browser (or `npx http-server`, then http://localhost:8080
 - **Zoom is 80 px/s by default**, so drag distances in the driver map to seconds (160 px = 2 s).
 - **Project state persists** in IndexedDB per browser profile; each driver run uses a fresh context, so it always starts empty.
 - **Split needs the playhead inside the selected clip**: clicking a clip selects it *and* moves the playhead there; otherwise the status line says "Move the playhead inside the selected clip to split."
+
+- **Shift-drag for the loop region** must hold Shift via `page.keyboard.down('Shift')` around the mouse down/move/up; the page globals `loopRegion`, `transport` and `position()` can be read with `page.evaluate`.
 
 ## Troubleshooting
 

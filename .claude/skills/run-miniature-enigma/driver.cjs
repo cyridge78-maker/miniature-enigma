@@ -90,6 +90,22 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   await page.click('#btn-undo'); await page.click('#btn-undo'); await page.click('#btn-redo'); await page.click('#btn-redo');
   await shot('3-edited');
 
+  // Loop: shift-drag 0.5 s .. 1.5 s on the waveform, play from the start, position must stay inside the region.
+  const wb = await page.locator('.track-wave').first().boundingBox();
+  await page.keyboard.down('Shift');
+  await page.mouse.move(wb.x + 40, wb.y + 60); await page.mouse.down();
+  await page.mouse.move(wb.x + 120, wb.y + 60, { steps: 4 }); await page.mouse.up();
+  await page.keyboard.up('Shift');
+  check('shift-drag sets and enables loop', await page.evaluate(() =>
+    loopRegion.enabled && Math.abs(loopRegion.start - 0.5) < 0.05 && Math.abs(loopRegion.end - 1.5) < 0.05), await status());
+  await page.click('#btn-rewind'); await page.click('#btn-play'); await page.waitForTimeout(2600);
+  const loopPos = await page.evaluate(() => ({ pos: position(), n: transport.sources.length }));
+  check('playback wraps inside the loop region', loopPos.pos >= 0.45 && loopPos.pos <= 1.55, `(pos ${loopPos.pos.toFixed(2)} s, ${loopPos.n} scheduled sources)`);
+  await shot('3b-loop');
+  await page.click('#btn-play');
+  await page.click('#btn-loop');
+  check('loop button toggles off', await page.evaluate(() => !loopRegion.enabled));
+
   // Settings: switch theme.
   await page.click('#btn-settings'); await page.selectOption('#s-theme', 'light');
   check('theme setting applies', (await page.evaluate(() => document.documentElement.dataset.theme)) === 'light');
