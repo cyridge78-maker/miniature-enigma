@@ -670,6 +670,21 @@ $('bpm').onchange = () => {
   if (transport.state === 'playing') { stopSources(); stopMetronome(); transport.pos = position(); begin('playing'); }
   scheduleSave();
 };
+// Tap tempo: average of the last few intervals; a pause over 2 s starts a new count.
+const taps = [];
+function tapTempo() {
+  const now = performance.now();
+  if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
+  taps.push(now);
+  if (taps.length > 8) taps.shift();
+  if (taps.length < 2) { setStatus('Tap again to set the tempo…'); return; }
+  const avg = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+  const bpm = Math.round(clamp(60000 / avg, 30, 300));
+  $('bpm').value = bpm;
+  $('bpm').dispatchEvent(new Event('change'));
+  setStatus(`Tempo: ${bpm} BPM`);
+}
+$('btn-tap').onclick = tapTempo;
 document.addEventListener('keydown', (e) => {
   if (editingText() || $('settings').open) return;
   if ((e.metaKey || e.ctrlKey) && !e.altKey) {
@@ -681,6 +696,7 @@ document.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey) return;
   if (e.code === 'Space') { e.preventDefault(); play(); }
   else if (e.key === 'r' || e.key === 'R') $('btn-record').click();
+  else if (e.key === 't' || e.key === 'T') tapTempo();
   else if (e.key === 's' || e.key === 'S') splitSelected();
   else if (e.code === 'Delete' || e.code === 'Backspace') deleteSelected();
   else if (e.code === 'Home') $('btn-rewind').click();

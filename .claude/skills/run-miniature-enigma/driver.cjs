@@ -38,6 +38,16 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   await page.waitForSelector('.track');
   await shot('1-initial');
 
+  // Tap tempo: four taps 500 ms apart should read 120 BPM.
+  // Taps are scheduled inside the page: per-click round trips from Node would skew the interval.
+  await page.evaluate(() => new Promise((done) => {
+    let n = 0; const t0 = performance.now();
+    (function tap() { document.getElementById('btn-tap').click(); if (++n === 4) return done();
+      setTimeout(tap, t0 + n * 500 - performance.now()); })();
+  }));
+  const tapped = +(await page.inputValue('#bpm'));
+  check('tap tempo sets ~120 BPM', Math.abs(tapped - 120) <= 6, `(${tapped})`);
+
   // Record ~1s with a 240 BPM / 1-beat-bar-less count-in of 1 bar (=1s), via the fake mic.
   await page.fill('#bpm', '240'); await page.dispatchEvent('#bpm', 'change');
   await page.click('#btn-record'); await page.waitForTimeout(2200); await page.click('#btn-record');
