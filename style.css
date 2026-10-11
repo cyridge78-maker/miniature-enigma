@@ -72,3 +72,15 @@ menu { display: flex; justify-content: space-between; padding: 0; margin: 0; }
   .track { grid-template-columns: 1fr; }
   .track-head { border-right: 0; border-bottom: 1px solid var(--border); }
 }
+
+.clips { position: absolute; inset: 0; pointer-events: none; }
+.clip { position: absolute; top: 2px; bottom: 2px; border: 1px solid var(--wave); border-radius: 4px; pointer-events: auto; cursor: grab; touch-action: none; }
+.clip.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: rgba(79,156,255,.12); }
+.clip .handle { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; background: var(--wave); opacity: .35; }
+.clip .handle:hover, .clip.selected .handle { opacity: .8; }
+.clip .handle.left { left: 0; border-radius: 4px 0 0 4px; }
+.clip .handle.right { right: 0; border-radius: 0 4px 4px 0; }
+label.inline input[type=range] { width: 80px; vertical-align: middle; }
+
+.loop-region { position: absolute; top: 0; bottom: 0; display: none; pointer-events: none; background: rgba(255,200,0,.10); border-left: 2px solid rgba(255,200,0,.5); border-right: 2px solid rgba(255,200,0,.5); }
+.loop-region.on { background: rgba(255,200,0,.22); border-color: #ffc800; }

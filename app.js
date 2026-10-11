@@ -4,7 +4,7 @@
 // ---------- Settings ----------
 const DEFAULTS = {
   inputId: '', channels: 1, echo: false, noise: false, agc: false, monitor: false, latency: 0,
-  beats: 4, countIn: 1, metroVol: 0.5, metroRec: true, metroPlay: false,
+  beats: 4, beatUnit: 4, subdiv: 1, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
   theme: 'dark', zoom: 80, autoscroll: true, bits: 16, normalize: false,
 };
 let settings = loadSettings();
@@ -92,9 +92,10 @@ function scheduleSave() {
       await db.put({
         bpm: +$('bpm').value,
         master: +$('master-vol').value,
+        loop: { ...loopRegion },
         tracks: tracks.map((t) => ({
           name: t.name, vol: t.vol, pan: t.pan, mute: t.mute, solo: t.solo,
-          clips: t.clips.map((c) => ({ start: c.start, blob: c.blob })),
+          clips: t.clips.map((c) => ({ start: c.start, off: c.off, dur: c.dur, blob: c.blob })),
         })),
       });
     } catch (e) { setStatus('Could not save project: ' + e.message); }
@@ -135,51 +136,79 @@ function applyMix() {
   }
   master.gain.setTargetAtTime(+$('master-vol').value, ctx.currentTime, 0.01);
 }
-const projectEnd = () => Math.max(0, ...tracks.flatMap((t) => t.clips.map((c) => c.start + c.buffer.duration)));
+const projectEnd = () => Math.max(0, ...tracks.flatMap((t) => t.clips.map((c) => c.start + c.dur)));
 
 // ---------- Transport ----------
-const transport = { state: 'stopped', pos: 0, pos0: 0, t0: 0, sources: [], metroTimer: 0, nextBeat: 0 };
-const position = () => (transport.state === 'stopped' ? transport.pos : transport.pos0 + (ctx.currentTime - transport.t0));
+/** BPM counts quarter notes; the time signature's denominator scales the click (6/8 clicks on eighths). */
+const beatSeconds = () => (60 / clamp(+$('bpm').value || 120, 30, 300)) * (4 / settings.beatUnit);
 
-function startSources(pos0, t0) {
+const transport = { state: 'stopped', pos: 0, pos0: 0, t0: 0, sources: [], metroTimer: 0, nextBeat: 0, loop: null, loopTimer: 0, nextBoundary: 0 };
+/** Loop region on the timeline (seconds). Only affects playback, not recording. */
+const loopRegion = { start: 0, end: 0, enabled: false };
+const MIN_LOOP = 0.1;
+const loopValid = () => loopRegion.end - loopRegion.start >= MIN_LOOP;
+function position() {
+  if (transport.state === 'stopped') return transport.pos;
+  const raw = transport.pos0 + (ctx.currentTime - transport.t0);
+  const l = transport.loop;
+  return l && raw >= l.end ? l.start + ((raw - l.end) % (l.end - l.start)) : raw;
+}
+
+/** Schedule every clip's audio for timeline range [from, to), where `from` plays at ctx time `when0`. */
+function startSources(from, when0, to = Infinity) {
   for (const t of tracks) {
     for (const c of t.clips) {
-      const when = t0 + (c.start - pos0);
-      const offset = Math.max(0, ctx.currentTime - when);
-      if (offset >= c.buffer.duration) continue;
+      const segStart = Math.max(c.start, from), segEnd = Math.min(c.start + c.dur, to);
+      if (segEnd <= segStart) continue;
+      let when = when0 + (segStart - from), off = c.off + (segStart - c.start), dur = segEnd - segStart;
+      if (when < ctx.currentTime) {          // already underway: join mid-clip
+        const skip = ctx.currentTime - when;
+        if (skip >= dur) continue;
+        when = ctx.currentTime; off += skip; dur -= skip;
+      }
       const src = ctx.createBufferSource();
       src.buffer = c.buffer; src.connect(t.gain);
-      src.start(Math.max(when, ctx.currentTime), offset);
+      src.start(when, off, dur);
+      src.onended = () => { transport.sources = transport.sources.filter((x) => x !== src); src.disconnect(); };
       transport.sources.push(src);
     }
   }
 }
 function stopSources() {
-  for (const s of transport.sources) { try { s.stop(); } catch { /* already stopped */ } s.disconnect(); }
+  clearInterval(transport.loopTimer); transport.loopTimer = 0;
+  for (const s of transport.sources) { s.onended = null; try { s.stop(); } catch { /* already stopped */ } s.disconnect(); }
   transport.sources = [];
 }
 
-function click(time, accent) {
+const CLICK_SOUND = { accent: [1600, 1], beat: [1000, 1], sub: [700, 0.45] }; // [Hz, volume scale]
+function click(time, kind) {
+  const [freq, gain] = CLICK_SOUND[kind];
   const osc = ctx.createOscillator(), g = ctx.createGain();
-  osc.frequency.value = accent ? 1600 : 1000;
-  g.gain.setValueAtTime(settings.metroVol, time);
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(settings.metroVol * gain + 1e-4, time);
   g.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
   osc.connect(g); g.connect(ctx.destination);
   osc.start(time); osc.stop(time + 0.06);
 }
-/** Click grid is anchored at pos0; negative beat indices are the count-in. */
+const mod = (a, n) => ((a % n) + n) % n;
+/** Kind of click for subdivision tick `i` (0 = downbeat of a bar); `beatsOnly` drops the subdivision ticks. */
+function tickKind(i, beatsOnly) {
+  if (mod(i, settings.subdiv)) return beatsOnly ? null : 'sub';
+  return mod(i / settings.subdiv, settings.beats) === 0 ? 'accent' : 'beat';
+}
+/** Tick grid is anchored at pos0, `spb` apart per beat; negative ticks are the count-in (beats only). */
 function startMetronome(withCountIn, pos0, t0, spb, enabled) {
   stopMetronome();
   if (!enabled && !withCountIn) return;
-  const countBeats = withCountIn ? settings.countIn * settings.beats : 0;
-  transport.nextBeat = -countBeats;
+  const step = spb / settings.subdiv;
+  transport.nextBeat = withCountIn ? -settings.countIn * settings.beats * settings.subdiv : 0;
   const tick = () => {
     while (true) {
-      const j = transport.nextBeat, time = t0 + j * spb;
+      const i = transport.nextBeat, time = t0 + i * step;
       if (time > ctx.currentTime + 0.12) break;
-      if (j < 0 || enabled) {
-        const bar = ((j % settings.beats) + settings.beats) % settings.beats;
-        if (time >= ctx.currentTime) click(time, bar === 0);
+      if ((i < 0 || enabled) && time >= ctx.currentTime) {
+        const kind = tickKind(i, i < 0);
+        if (kind) click(time, kind);
       }
       transport.nextBeat++;
     }
@@ -189,15 +218,44 @@ function startMetronome(withCountIn, pos0, t0, spb, enabled) {
 }
 function stopMetronome() { clearInterval(transport.metroTimer); transport.metroTimer = 0; }
 
+/** Clicks for timeline range [from, to) on a beat grid anchored at the loop start, `from` sounding at ctx time `when0`. */
+function scheduleLoopClicks(from, to, when0, spb) {
+  const grid = loopRegion.start, step = spb / settings.subdiv;
+  for (let i = Math.ceil((from - grid) / step - 1e-9); grid + i * step < to - 1e-9; i++) {
+    const when = when0 + (grid + i * step - from);
+    if (when >= ctx.currentTime) click(when, tickKind(i, false));
+  }
+}
+
 async function begin(mode, countInSec = 0) {
   await ctx.resume();
-  const spb = 60 / clamp(+$('bpm').value || 120, 30, 300);
+  const spb = beatSeconds();
   transport.pos0 = transport.pos;
   transport.t0 = ctx.currentTime + 0.05 + countInSec;
   transport.state = mode;
-  startSources(transport.pos0, transport.t0);
-  startMetronome(countInSec > 0, transport.pos0, transport.t0, spb,
-    mode === 'recording' ? settings.metroRec : settings.metroPlay);
+  const looping = mode === 'playing' && loopRegion.enabled && loopValid() && transport.pos0 < loopRegion.end;
+  transport.loop = looping ? { start: loopRegion.start, end: loopRegion.end } : null;
+  if (looping) {
+    // First pass runs from the playhead to the loop end; later passes are scheduled just ahead of time.
+    const { start, end } = transport.loop, len = end - start;
+    const pass = (from, when0) => {
+      startSources(from, when0, end);
+      if (settings.metroPlay) scheduleLoopClicks(from, end, when0, spb);
+    };
+    stopMetronome();
+    pass(transport.pos0, transport.t0);
+    transport.nextBoundary = transport.t0 + (end - transport.pos0);
+    transport.loopTimer = setInterval(() => {
+      while (transport.nextBoundary < ctx.currentTime + 0.25) {
+        pass(start, transport.nextBoundary);
+        transport.nextBoundary += len;
+      }
+    }, 25);
+  } else {
+    startSources(transport.pos0, transport.t0);
+    startMetronome(countInSec > 0, transport.pos0, transport.t0, spb,
+      mode === 'recording' ? settings.metroRec : settings.metroPlay);
+  }
   updateButtons();
 }
 async function play() {
@@ -216,6 +274,116 @@ function stop() {
   pause();
   transport.pos = 0;
   scheduleScroll(true);
+}
+
+// ---------- Clips ----------
+const MIN_CLIP = 0.02;
+/** A clip is a non-destructive window (off, dur) onto its buffer, placed at `start` on the timeline. */
+const makeClip = (start, buffer, blob) => ({ start, buffer, blob, off: 0, dur: buffer.duration });
+let selected = null; // {track, clip}
+const findTrack = (clip) => tracks.find((t) => t.clips.includes(clip));
+
+// Undo/redo: snapshots of every track's clip list (clips are small objects sharing immutable buffers).
+const history = { undo: [], redo: [] };
+const HISTORY_LIMIT = 100;
+const snapshot = () => tracks.map((t) => ({ track: t, clips: t.clips.map((c) => ({ ...c })) }));
+function checkpoint(snap = snapshot()) {
+  history.undo.push(snap);
+  if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
+  history.redo = [];
+  updateHistoryButtons();
+}
+function resetHistory() { history.undo = []; history.redo = []; selected = null; updateHistoryButtons(); }
+function restore(snap) {
+  for (const e of snap) if (tracks.includes(e.track)) e.track.clips = e.clips.map((c) => ({ ...c }));
+  selected = null; renderWaves(); refreshPlayback(); scheduleSave(); updateHistoryButtons();
+}
+function undo() {
+  if (!history.undo.length || transport.state === 'recording') return;
+  history.redo.push(snapshot()); restore(history.undo.pop());
+  setStatus('Undo.');
+}
+function redo() {
+  if (!history.redo.length || transport.state === 'recording') return;
+  history.undo.push(snapshot()); restore(history.redo.pop());
+  setStatus('Redo.');
+}
+function updateHistoryButtons() {
+  $('btn-undo').disabled = !history.undo.length;
+  $('btn-redo').disabled = !history.redo.length;
+}
+
+function refreshPlayback() {
+  if (transport.state !== 'playing') return;
+  stopSources(); stopMetronome(); transport.pos = position(); begin('playing');
+}
+function deleteSelected() {
+  if (!selected || transport.state === 'recording') return;
+  const t = findTrack(selected.clip);
+  if (t) checkpoint();
+  if (t) t.clips = t.clips.filter((c) => c !== selected.clip);
+  selected = null; renderWaves(); refreshPlayback(); scheduleSave();
+}
+function splitSelected() {
+  if (!selected || transport.state === 'recording') { setStatus('Select a clip first.'); return; }
+  const { clip } = selected, t = findTrack(clip), at = position() - clip.start;
+  if (!t || at < MIN_CLIP || at > clip.dur - MIN_CLIP) { setStatus('Move the playhead inside the selected clip to split.'); return; }
+  checkpoint();
+  const right = { ...clip, start: clip.start + at, off: clip.off + at, dur: clip.dur - at };
+  clip.dur = at;
+  t.clips.push(right); selected = { track: t, clip: right };
+  renderWaves(); refreshPlayback(); scheduleSave();
+}
+async function importFiles(files) {
+  const track = tracks.find((t) => t.armed) || tracks[0] || createTrack();
+  let at = position();
+  let before = snapshot(); // checkpointed once, on the first successful decode
+  for (const f of files) {
+    try {
+      const buffer = await ctx.decodeAudioData(await f.arrayBuffer());
+      const clip = makeClip(at, buffer, bufferToWav(buffer, 16));
+      if (before) { checkpoint(before); before = null; }
+      track.clips.push(clip); selected = { track, clip };
+      setStatus(`Imported “${f.name}” (${buffer.duration.toFixed(2)} s) onto “${track.name}”.`);
+      at += buffer.duration;
+    } catch {
+      setStatus(`Could not decode “${f.name}”: unsupported audio file.`);
+    }
+  }
+  renderTracks(); refreshPlayback(); scheduleSave();
+}
+
+/** Drag a clip body to move it, or its edges to trim. */
+function startDrag(e, track, clip, mode) {
+  if (e.shiftKey) return; // shift-drag defines the loop region (handled by the track)
+  e.preventDefault(); e.stopPropagation();
+  if (transport.state === 'recording') return;
+  selected = { track, clip };
+  // Restyle in place: re-rendering here would replace the element and swallow the click.
+  document.querySelectorAll('.clip.selected').forEach((n) => n.classList.remove('selected'));
+  e.currentTarget.closest('.clip').classList.add('selected');
+  const before = snapshot();
+  const x0 = e.clientX, orig = { start: clip.start, off: clip.off, dur: clip.dur }, z = settings.zoom;
+  let moved = false;
+  const move = (ev) => {
+    const d = (ev.clientX - x0) / z;
+    if (Math.abs(ev.clientX - x0) > 2) moved = true;
+    if (!moved) return;
+    if (mode === 'move') clip.start = Math.max(0, orig.start + d);
+    else if (mode === 'left') {
+      const dd = clamp(d, -Math.min(orig.off, orig.start), orig.dur - MIN_CLIP);
+      clip.start = orig.start + dd; clip.off = orig.off + dd; clip.dur = orig.dur - dd;
+    } else {
+      clip.dur = clamp(orig.dur + d, MIN_CLIP, clip.buffer.duration - orig.off);
+    }
+    renderWaves();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    if (moved) { checkpoint(before); refreshPlayback(); scheduleSave(); renderWaves(); }
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
 }
 
 // ---------- Recording ----------
@@ -256,7 +424,7 @@ async function startRecording() {
   }
   populateDevices();
   rec.track = track; rec.chunks = [];
-  rec.countIn = settings.countIn * settings.beats * (60 / clamp(+$('bpm').value || 120, 30, 300));
+  rec.countIn = !settings.countInOn ? 0 : settings.countIn * settings.beats * beatSeconds();
   rec.recorder = new MediaRecorder(rec.stream);
   rec.recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   rec.recorder.onstop = finishRecording;
@@ -294,7 +462,8 @@ async function finishRecording() {
     if (len < decoded.sampleRate * 0.02) { setStatus('Nothing recorded.'); return; }
     const out = ctx.createBuffer(decoded.numberOfChannels, len, decoded.sampleRate);
     for (let c = 0; c < out.numberOfChannels; c++) out.copyToChannel(decoded.getChannelData(c).subarray(trim), c);
-    rec.track.clips.push({ start: rec.pos0, buffer: out, blob: bufferToWav(out, 32) });
+    checkpoint();
+    rec.track.clips.push(makeClip(rec.pos0, out, bufferToWav(out, 32)));
     setStatus(`Recorded ${out.duration.toFixed(2)} s on “${rec.track.name}”.`);
     renderWaves(); scheduleSave();
   } catch (e) {
@@ -315,7 +484,7 @@ async function exportWav() {
     const p = off.createStereoPanner(); p.pan.value = t.pan;
     g.connect(p); p.connect(m);
     for (const c of t.clips) {
-      const s = off.createBufferSource(); s.buffer = c.buffer; s.connect(g); s.start(c.start);
+      const s = off.createBufferSource(); s.buffer = c.buffer; s.connect(g); s.start(c.start, c.off, c.dur);
     }
   }
   setStatus('Rendering…');
@@ -363,11 +532,12 @@ function renderTracks() {
     const mute = button('M', 'Mute', () => { t.mute = !t.mute; applyMix(); renderTracks(); scheduleSave(); }, t.mute ? 'active' : '');
     const solo = button('S', 'Solo', () => { t.solo = !t.solo; applyMix(); renderTracks(); scheduleSave(); }, t.solo ? 'active' : '');
     const clear = button('Clear', 'Remove all recordings on this track', () => {
-      t.clips = []; renderWaves(); scheduleSave();
+      if (!t.clips.length) return;
+      checkpoint(); t.clips = []; selected = null; renderWaves(); scheduleSave();
     });
     const del = button('🗑', 'Delete track', () => {
       t.gain.disconnect(); t.panner.disconnect();
-      tracks = tracks.filter((x) => x !== t); renderTracks(); scheduleSave();
+      tracks = tracks.filter((x) => x !== t); resetHistory(); renderTracks(); scheduleSave();
     }, 'danger');
     row.append(arm, mute, solo, clear, del);
     head.append(name, row,
@@ -377,8 +547,37 @@ function renderTracks() {
     const wave = document.createElement('div'); wave.className = 'track-wave';
     const canvas = document.createElement('canvas');
     const ph = document.createElement('div'); ph.className = 'playhead';
-    wave.append(canvas, ph);
+    const overlay = document.createElement('div'); overlay.className = 'clips';
+    const loopEl = document.createElement('div'); loopEl.className = 'loop-region';
+    wave.append(canvas, loopEl, overlay, ph);
+    wave.onpointerdown = (e) => {
+      if (!e.shiftKey || e.button !== 0 || transport.state === 'recording') return;
+      e.preventDefault();
+      const left = canvas.getBoundingClientRect().left;
+      const at = (ev) => Math.max(0, (ev.clientX - left) / settings.zoom);
+      const anchor = at(e);
+      const move = (ev) => {
+        const p = at(ev);
+        loopRegion.start = Math.min(anchor, p); loopRegion.end = Math.max(anchor, p);
+        updateLoopOverlay();
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+        if (!loopValid()) { setStatus('Loop region too short; shift-drag a longer span.'); loopRegion.enabled = false; }
+        else {
+          loopRegion.enabled = true;
+          setStatus(`Loop ${fmtTime(loopRegion.start)} – ${fmtTime(loopRegion.end)}`);
+          refreshPlayback();
+        }
+        updateLoopOverlay(); updateButtons(); scheduleSave();
+      };
+      loopRegion.start = loopRegion.end = anchor;
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    };
     wave.onclick = (e) => {
+      if (e.shiftKey) return;
+      if (selected) { selected = null; renderWaves(); }
       if (transport.state === 'recording') return;
       const x = e.clientX - canvas.getBoundingClientRect().left;
       const p = Math.max(0, x / settings.zoom);
@@ -388,7 +587,7 @@ function renderTracks() {
     wave.onscroll = () => syncScroll(wave);
     el.append(head, wave);
     host.appendChild(el);
-    t.el = el; t.canvas = canvas; t.playhead = ph; t.wave = wave;
+    t.el = el; t.loopEl = loopEl; t.overlay = overlay; t.canvas = canvas; t.playhead = ph; t.wave = wave;
   }
   renderWaves();
 }
@@ -402,6 +601,16 @@ function syncScroll(src) {
 }
 function scheduleScroll(reset) { if (reset) for (const t of tracks) t.wave.scrollLeft = 0; }
 
+function updateLoopOverlay() {
+  const z = settings.zoom, show = loopValid() || loopRegion.end > loopRegion.start;
+  for (const t of tracks) {
+    t.loopEl.style.display = show ? 'block' : 'none';
+    t.loopEl.style.left = loopRegion.start * z + 'px';
+    t.loopEl.style.width = (loopRegion.end - loopRegion.start) * z + 'px';
+    t.loopEl.classList.toggle('on', loopRegion.enabled);
+  }
+}
+
 function renderWaves() {
   const z = settings.zoom;
   const width = Math.min(30000, Math.ceil(Math.max(30, projectEnd() + 10, position() + 10) * z));
@@ -414,23 +623,56 @@ function renderWaves() {
     for (let s = 0; s * z < width; s++) { g.moveTo(s * z + .5, 0); g.lineTo(s * z + .5, s % 5 ? 6 : 14); }
     g.moveTo(0, 48.5); g.lineTo(width, 48.5); g.stroke();
     g.fillStyle = color;
+    t.overlay.textContent = '';
     for (const clip of t.clips) {
-      const data = clip.buffer.getChannelData(0), x0 = clip.start * z, w = Math.min(width - x0, clip.buffer.duration * z);
-      const per = data.length / (clip.buffer.duration * z);
+      const data = clip.buffer.getChannelData(0), x0 = clip.start * z, w = Math.max(0, Math.min(width - x0, clip.dur * z));
+      const per = clip.buffer.sampleRate / z, base = clip.off * clip.buffer.sampleRate;
       g.globalAlpha = 0.15; g.fillRect(x0, 0, w, 96); g.globalAlpha = 1;
+      const el = document.createElement('div');
+      el.className = 'clip' + (selected?.clip === clip ? ' selected' : '');
+      el.style.left = x0 + 'px'; el.style.width = w + 'px';
+      el.title = 'Drag to move · drag edges to trim · Delete removes';
+      el.onpointerdown = (e) => startDrag(e, t, clip, 'move');
+      el.onclick = (e) => { // selecting a clip also moves the playhead to the click
+        e.stopPropagation();
+        if (transport.state === 'recording') return;
+        transport.pos = Math.max(0, (e.clientX - t.canvas.getBoundingClientRect().left) / settings.zoom);
+        refreshPlayback();
+      };
+      for (const side of ['left', 'right']) {
+        const h = document.createElement('div'); h.className = 'handle ' + side;
+        h.onpointerdown = (e) => startDrag(e, t, clip, side);
+        el.appendChild(h);
+      }
+      t.overlay.appendChild(el);
       for (let x = 0; x < w; x++) {
         let mn = 0, mx = 0;
-        const a = Math.floor(x * per), b = Math.min(data.length, Math.floor((x + 1) * per) + 1);
+        const a = Math.floor(base + x * per), b = Math.min(data.length, Math.floor(base + (x + 1) * per) + 1);
         for (let i = a; i < b; i++) { const v = data[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
         g.fillRect(x0 + x, 48 - mx * 44, 1, Math.max(1, (mx - mn) * 44));
       }
     }
   }
+  updateLoopOverlay();
+}
+
+function toggleLoop() {
+  if (!loopRegion.enabled && !loopValid()) {
+    const sel = selected?.clip;
+    if (sel) { loopRegion.start = sel.start; loopRegion.end = sel.start + sel.dur; }
+    else if (projectEnd() >= MIN_LOOP) { loopRegion.start = 0; loopRegion.end = projectEnd(); }
+    else { setStatus('Shift-drag on a waveform to set a loop region.'); return; }
+  }
+  loopRegion.enabled = !loopRegion.enabled;
+  setStatus(loopRegion.enabled ? `Loop on: ${fmtTime(loopRegion.start)} – ${fmtTime(loopRegion.end)} (shift-drag to change)` : 'Loop off.');
+  updateLoopOverlay(); updateButtons(); refreshPlayback(); scheduleSave();
 }
 
 function updateButtons() {
+  $('btn-loop').setAttribute('aria-pressed', String(loopRegion.enabled));
   $('btn-play').textContent = transport.state === 'playing' ? '⏸' : '▶';
   $('btn-record').classList.toggle('active', transport.state === 'recording');
+  $('btn-countin').setAttribute('aria-pressed', String(settings.countInOn && settings.countIn > 0));
   $('btn-metro').setAttribute('aria-pressed', String(settings.metroRec || settings.metroPlay));
 }
 
@@ -463,16 +705,27 @@ function frame() {
 const bindings = [
   ['s-input', 'inputId', 'value'], ['s-channels', 'channels', 'num'], ['s-echo', 'echo', 'check'],
   ['s-noise', 'noise', 'check'], ['s-agc', 'agc', 'check'], ['s-monitor', 'monitor', 'check'],
-  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-countin', 'countIn', 'num'],
+  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-beatunit', 'beatUnit', 'num'], ['s-subdiv', 'subdiv', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
   ['s-metro-vol', 'metroVol', 'num'], ['s-metro-rec', 'metroRec', 'check'], ['s-metro-play', 'metroPlay', 'check'],
   ['s-theme', 'theme', 'value'], ['s-zoom', 'zoom', 'num'], ['s-autoscroll', 'autoscroll', 'check'],
   ['s-bits', 'bits', 'num'], ['s-normalize', 'normalize', 'check'],
 ];
+const TIME_SIGS = ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '2/2', '3/8', '6/8', '9/8', '12/8'];
+function syncTimeSig() {
+  const sel = $('time-sig'), cur = `${settings.beats}/${settings.beatUnit}`;
+  sel.textContent = '';
+  const list = TIME_SIGS.includes(cur) ? TIME_SIGS : [...TIME_SIGS, cur];
+  for (const v of list) sel.add(new Option(v, v));
+  sel.value = cur;
+}
 function syncSettingsUI() {
   for (const [id, key, kind] of bindings) {
     const el = $(id);
     if (kind === 'check') el.checked = settings[key]; else el.value = settings[key];
   }
+  $('click-vol').value = settings.metroVol;
+  syncTimeSig();
+  $('subdiv').value = settings.subdiv;
 }
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
@@ -513,16 +766,29 @@ $('btn-rewind').onclick = () => {
   transport.pos = 0; scheduleScroll(true);
   if (playing) begin('playing');
 };
+$('btn-countin').onclick = () => {
+  const on = !(settings.countInOn && settings.countIn > 0);
+  settings.countInOn = on;
+  if (on && settings.countIn < 1) settings.countIn = 1; // 0 bars would make "on" meaningless
+  saveSettings(); syncSettingsUI(); updateButtons();
+  setStatus(on ? `Count-in on (${settings.countIn} bar${settings.countIn > 1 ? 's' : ''})` : 'Count-in off.');
+};
 $('btn-metro').onclick = () => {
   const on = !(settings.metroRec || settings.metroPlay);
   settings.metroRec = settings.metroPlay = on; saveSettings(); syncSettingsUI(); updateButtons();
 };
+$('btn-import').onclick = () => $('file-import').click();
+$('file-import').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
+$('btn-split').onclick = splitSelected;
+$('btn-undo').onclick = undo;
+$('btn-redo').onclick = redo;
+$('btn-delete-clip').onclick = deleteSelected;
 $('btn-add-track').onclick = () => { createTrack(); renderTracks(); scheduleSave(); };
 $('btn-clear').onclick = () => {
   if (!tracks.length || !confirm('Delete all tracks and recordings?')) return;
   stop();
   tracks.forEach((t) => { t.gain.disconnect(); t.panner.disconnect(); });
-  tracks = []; createTrack(); renderTracks(); scheduleSave();
+  tracks = []; createTrack(); resetHistory(); renderTracks(); scheduleSave();
 };
 $('btn-export').onclick = () => exportWav().catch((e) => setStatus('Export failed: ' + e.message));
 $('btn-settings').onclick = async () => { syncSettingsUI(); $('settings').showModal(); await populateDevices(); };
@@ -533,25 +799,70 @@ $('bpm').onchange = () => {
   if (transport.state === 'playing') { stopSources(); stopMetronome(); transport.pos = position(); begin('playing'); }
   scheduleSave();
 };
+// Tap tempo: average of the last few intervals; a pause over 2 s starts a new count.
+const taps = [];
+function tapTempo() {
+  const now = performance.now();
+  if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
+  taps.push(now);
+  if (taps.length > 8) taps.shift();
+  if (taps.length < 2) { setStatus('Tap again to set the tempo…'); return; }
+  const avg = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+  const bpm = Math.round(clamp(60000 / avg, 30, 300));
+  $('bpm').value = bpm;
+  $('bpm').dispatchEvent(new Event('change'));
+  setStatus(`Tempo: ${bpm} BPM`);
+}
+$('time-sig').onchange = () => {
+  const [n, d] = $('time-sig').value.split('/').map(Number);
+  settings.beats = n; settings.beatUnit = d; saveSettings(); syncSettingsUI();
+  refreshPlayback();
+  setStatus(`Time signature ${n}/${d}`);
+};
+$('subdiv').onchange = () => {
+  settings.subdiv = +$('subdiv').value; saveSettings(); syncSettingsUI(); refreshPlayback();
+  setStatus(`Subdivision: ${$('subdiv').selectedOptions[0].textContent}`);
+};
+$('btn-tap').onclick = tapTempo;
+$('btn-loop').onclick = toggleLoop;
+// Toolbar click volume shares settings.metroVol with the dialog; clicks read it when scheduled, so it is live.
+$('click-vol').oninput = () => { settings.metroVol = +$('click-vol').value; saveSettings(); syncSettingsUI(); };
 document.addEventListener('keydown', (e) => {
-  if (editingText() || $('settings').open || e.metaKey || e.ctrlKey) return;
+  if (editingText() || $('settings').open) return;
+  if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if (k === 'y') { e.preventDefault(); redo(); }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey) return;
   if (e.code === 'Space') { e.preventDefault(); play(); }
   else if (e.key === 'r' || e.key === 'R') $('btn-record').click();
+  else if (e.key === 't' || e.key === 'T') tapTempo();
+  else if (e.key === 'l' || e.key === 'L') toggleLoop();
+  else if (e.key === 's' || e.key === 'S') splitSelected();
+  else if (e.code === 'Delete' || e.code === 'Backspace') deleteSelected();
   else if (e.code === 'Home') $('btn-rewind').click();
 });
 
 // ---------- Boot ----------
 (async function init() {
-  applySettings();
+  applySettings(); syncSettingsUI();
   try {
     const saved = await db.get();
     if (saved) {
       $('bpm').value = saved.bpm || 120;
       $('master-vol').value = saved.master ?? 1;
+      if (saved.loop) Object.assign(loopRegion, saved.loop);
       for (const td of saved.tracks) {
         const t = createTrack(td);
         for (const c of td.clips) {
-          try { t.clips.push({ start: c.start, blob: c.blob, buffer: await ctx.decodeAudioData(await c.blob.arrayBuffer()) }); }
+          try {
+            const clip = makeClip(c.start, await ctx.decodeAudioData(await c.blob.arrayBuffer()), c.blob);
+            clip.off = clamp(c.off ?? 0, 0, clip.buffer.duration);
+            clip.dur = clamp(c.dur ?? clip.buffer.duration, 0, clip.buffer.duration - clip.off);
+            t.clips.push(clip);
+          }
           catch { /* skip undecodable clip */ }
         }
       }
@@ -560,6 +871,6 @@ document.addEventListener('keydown', (e) => {
   if (!tracks.length) createTrack();
   applyMix();
   renderTracks();
-  updateButtons();
+  updateButtons(); updateHistoryButtons();
   requestAnimationFrame(frame);
 })();

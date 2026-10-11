@@ -13,11 +13,17 @@
     <button id="btn-rewind" title="Rewind (Home)">⏮</button>
     <button id="btn-play" title="Play / Pause (Space)">▶</button>
     <button id="btn-stop" title="Stop">⏹</button>
+    <button id="btn-loop" title="Loop playback (L). Shift-drag on a waveform to set the region." aria-pressed="false">🔁</button>
     <button id="btn-record" class="rec" title="Record (R)">⏺</button>
     <span id="time" class="time">00:00.000</span>
   </div>
   <div class="tools">
     <label class="inline">BPM <input id="bpm" type="number" min="30" max="300" value="120"></label>
+    <label class="inline" title="Time signature (metronome accents and count-in)"><select id="time-sig"></select></label>
+    <label class="inline" title="Metronome subdivision"><select id="subdiv"><option value="1">♩ Beats</option><option value="2">♪ 8ths</option><option value="3">Triplets</option><option value="4">16ths</option></select></label>
+    <button id="btn-tap" title="Tap tempo (T): tap at least twice in rhythm">Tap</button>
+    <label class="inline" title="Click track volume">Click <input id="click-vol" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+    <button id="btn-countin" title="Count-in before recording" aria-pressed="true">1·2·3</button>
     <button id="btn-metro" title="Metronome" aria-pressed="false">🔔</button>
     <button id="btn-export">Export WAV</button>
     <button id="btn-settings">⚙ Settings</button>
@@ -29,6 +35,12 @@
     <label>Master <input id="master-vol" type="range" min="0" max="1.5" step="0.01" value="1"></label>
     <canvas id="master-meter" width="160" height="10"></canvas>
     <button id="btn-add-track">+ Add track</button>
+    <button id="btn-import" title="Import audio onto the armed track at the playhead">Import audio…</button>
+    <input id="file-import" type="file" accept="audio/*" multiple hidden>
+    <button id="btn-undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶ Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>↷ Redo</button>
+    <button id="btn-split" title="Split selected clip at playhead (S)">✂ Split</button>
+    <button id="btn-delete-clip" title="Delete selected clip (Delete)">Delete clip</button>
     <button id="btn-clear" class="danger">Clear project</button>
   </div>
   <div id="tracks"></div>
@@ -59,6 +71,9 @@
     <fieldset>
       <legend>Metronome</legend>
       <label>Beats per bar <input id="s-beats" type="number" min="1" max="12"></label>
+      <label>Subdivision <select id="s-subdiv"><option value="1">♩ Beats</option><option value="2">♪ 8ths</option><option value="3">Triplets</option><option value="4">16ths</option></select></label>
+      <label>Beat unit <select id="s-beatunit"><option value="2">half note (2)</option><option value="4">quarter note (4)</option><option value="8">eighth note (8)</option><option value="16">sixteenth note (16)</option></select></label>
+      <label class="check"><input type="checkbox" id="s-countin-on"> Count-in before recording</label>
       <label>Count-in bars <input id="s-countin" type="number" min="0" max="4"></label>
       <label>Volume <input id="s-metro-vol" type="range" min="0" max="1" step="0.01"></label>
       <label class="check"><input type="checkbox" id="s-metro-rec"> Metronome on while recording</label>
