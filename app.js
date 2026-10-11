@@ -4,7 +4,7 @@
 // ---------- Settings ----------
 const DEFAULTS = {
   inputId: '', channels: 1, echo: false, noise: false, agc: false, monitor: false, latency: 0,
-  beats: 4, beatUnit: 4, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
+  beats: 4, beatUnit: 4, subdiv: 1, countIn: 1, countInOn: true, metroVol: 0.5, metroRec: true, metroPlay: false,
   theme: 'dark', zoom: 80, autoscroll: true, bits: 16, normalize: false,
 };
 let settings = loadSettings();
@@ -180,27 +180,35 @@ function stopSources() {
   transport.sources = [];
 }
 
-function click(time, accent) {
+const CLICK_SOUND = { accent: [1600, 1], beat: [1000, 1], sub: [700, 0.45] }; // [Hz, volume scale]
+function click(time, kind) {
+  const [freq, gain] = CLICK_SOUND[kind];
   const osc = ctx.createOscillator(), g = ctx.createGain();
-  osc.frequency.value = accent ? 1600 : 1000;
-  g.gain.setValueAtTime(settings.metroVol, time);
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(settings.metroVol * gain + 1e-4, time);
   g.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
   osc.connect(g); g.connect(ctx.destination);
   osc.start(time); osc.stop(time + 0.06);
 }
-/** Click grid is anchored at pos0; negative beat indices are the count-in. */
+const mod = (a, n) => ((a % n) + n) % n;
+/** Kind of click for subdivision tick `i` (0 = downbeat of a bar); `beatsOnly` drops the subdivision ticks. */
+function tickKind(i, beatsOnly) {
+  if (mod(i, settings.subdiv)) return beatsOnly ? null : 'sub';
+  return mod(i / settings.subdiv, settings.beats) === 0 ? 'accent' : 'beat';
+}
+/** Tick grid is anchored at pos0, `spb` apart per beat; negative ticks are the count-in (beats only). */
 function startMetronome(withCountIn, pos0, t0, spb, enabled) {
   stopMetronome();
   if (!enabled && !withCountIn) return;
-  const countBeats = withCountIn ? settings.countIn * settings.beats : 0;
-  transport.nextBeat = -countBeats;
+  const step = spb / settings.subdiv;
+  transport.nextBeat = withCountIn ? -settings.countIn * settings.beats * settings.subdiv : 0;
   const tick = () => {
     while (true) {
-      const j = transport.nextBeat, time = t0 + j * spb;
+      const i = transport.nextBeat, time = t0 + i * step;
       if (time > ctx.currentTime + 0.12) break;
-      if (j < 0 || enabled) {
-        const bar = ((j % settings.beats) + settings.beats) % settings.beats;
-        if (time >= ctx.currentTime) click(time, bar === 0);
+      if ((i < 0 || enabled) && time >= ctx.currentTime) {
+        const kind = tickKind(i, i < 0);
+        if (kind) click(time, kind);
       }
       transport.nextBeat++;
     }
@@ -212,10 +220,10 @@ function stopMetronome() { clearInterval(transport.metroTimer); transport.metroT
 
 /** Clicks for timeline range [from, to) on a beat grid anchored at the loop start, `from` sounding at ctx time `when0`. */
 function scheduleLoopClicks(from, to, when0, spb) {
-  const grid = loopRegion.start;
-  for (let j = Math.ceil((from - grid) / spb - 1e-9); grid + j * spb < to - 1e-9; j++) {
-    const when = when0 + (grid + j * spb - from);
-    if (when >= ctx.currentTime) click(when, ((j % settings.beats) + settings.beats) % settings.beats === 0);
+  const grid = loopRegion.start, step = spb / settings.subdiv;
+  for (let i = Math.ceil((from - grid) / step - 1e-9); grid + i * step < to - 1e-9; i++) {
+    const when = when0 + (grid + i * step - from);
+    if (when >= ctx.currentTime) click(when, tickKind(i, false));
   }
 }
 
@@ -697,7 +705,7 @@ function frame() {
 const bindings = [
   ['s-input', 'inputId', 'value'], ['s-channels', 'channels', 'num'], ['s-echo', 'echo', 'check'],
   ['s-noise', 'noise', 'check'], ['s-agc', 'agc', 'check'], ['s-monitor', 'monitor', 'check'],
-  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-beatunit', 'beatUnit', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
+  ['s-latency', 'latency', 'num'], ['s-beats', 'beats', 'num'], ['s-beatunit', 'beatUnit', 'num'], ['s-subdiv', 'subdiv', 'num'], ['s-countin', 'countIn', 'num'], ['s-countin-on', 'countInOn', 'check'],
   ['s-metro-vol', 'metroVol', 'num'], ['s-metro-rec', 'metroRec', 'check'], ['s-metro-play', 'metroPlay', 'check'],
   ['s-theme', 'theme', 'value'], ['s-zoom', 'zoom', 'num'], ['s-autoscroll', 'autoscroll', 'check'],
   ['s-bits', 'bits', 'num'], ['s-normalize', 'normalize', 'check'],
@@ -717,6 +725,7 @@ function syncSettingsUI() {
   }
   $('click-vol').value = settings.metroVol;
   syncTimeSig();
+  $('subdiv').value = settings.subdiv;
 }
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
@@ -809,6 +818,10 @@ $('time-sig').onchange = () => {
   settings.beats = n; settings.beatUnit = d; saveSettings(); syncSettingsUI();
   refreshPlayback();
   setStatus(`Time signature ${n}/${d}`);
+};
+$('subdiv').onchange = () => {
+  settings.subdiv = +$('subdiv').value; saveSettings(); syncSettingsUI(); refreshPlayback();
+  setStatus(`Subdivision: ${$('subdiv').selectedOptions[0].textContent}`);
 };
 $('btn-tap').onclick = tapTempo;
 $('btn-loop').onclick = toggleLoop;

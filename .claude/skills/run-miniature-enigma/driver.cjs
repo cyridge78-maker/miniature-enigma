@@ -55,6 +55,23 @@ const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} $
   await page.selectOption('#time-sig', '4/4');
   check('time signature back to 4/4', await page.evaluate(() => settings.beats === 4 && settings.beatUnit === 4 && Math.abs(beatSeconds() - 60 / +document.getElementById('bpm').value) < 1e-9));
 
+  // Subdivision: 8ths at 120 BPM in 4/4 -> accent,sub,beat,sub,beat,sub,beat,sub,accent, 0.25 s apart.
+  await page.fill('#bpm', '120'); await page.dispatchEvent('#bpm', 'change');
+  await page.selectOption('#subdiv', '2');
+  const clicks = await page.evaluate(() => new Promise((done) => {
+    const log = [], orig = window.click;
+    window.click = (time, kind) => { log.push({ time, kind }); orig(time, kind); };
+    settings.metroPlay = true; transport.pos = 0;
+    document.getElementById('btn-play').click();
+    setTimeout(() => { document.getElementById('btn-play').click(); window.click = orig; settings.metroPlay = false; done(log); }, 2300);
+  }));
+  const kinds = clicks.slice(0, 9).map((c) => c.kind).join(',');
+  const gaps = clicks.slice(1, 9).map((c, i) => c.time - clicks[i].time);
+  check('subdivision clicks: accent/beat/sub pattern', kinds === 'accent,sub,beat,sub,beat,sub,beat,sub,accent', kinds);
+  check('subdivision clicks spaced a 1/8 note apart', gaps.length === 8 && gaps.every((g) => Math.abs(g - 0.25) < 0.01), gaps.map((g) => g.toFixed(3)).join(' '));
+  await page.selectOption('#subdiv', '1');
+  await page.evaluate(() => { transport.pos = 0; });
+
   // Count-in toggle: off then on again; the setting is shared with the dialog.
   await page.click('#btn-countin');
   check('count-in toggles off', await page.evaluate(() => settings.countInOn === false && !document.getElementById('s-countin-on').checked));
